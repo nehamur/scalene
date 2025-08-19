@@ -1023,6 +1023,8 @@ class Scalene:
         # print(fname, lineno)
         main_tid = cast(int, threading.main_thread().ident)
         if not is_thread_sleeping[main_tid]:
+            Scalene.__stats.cpu_stats.cpu_samples_list[fname][lineno].append(now.wallclock)
+            # print(Scalene.__stats.cpu_stats.cpu_samples_list[fname][lineno])
             Scalene.__stats.cpu_stats.cpu_samples_python[fname][
                 lineno
             ] += average_python_time
@@ -1535,9 +1537,14 @@ class Scalene:
             )
             sys.exit(1)
         Scalene.__stats.start_clock()
+        Scalene.__stats.start_time_perf = time.perf_counter()
         Scalene.enable_signals()
         Scalene.__start_time = time.monotonic_ns()
         Scalene.__done = False
+
+        # Start neuron monitor if using Neuron accelerator
+        if hasattr(Scalene.__accelerator, 'start_monitor'):
+            Scalene.__accelerator.start_monitor()
 
         if Scalene.__args.memory:
             from scalene import pywhere  # type: ignore
@@ -1686,7 +1693,6 @@ class Scalene:
         except SystemExit as se:
             # Intercept sys.exit and propagate the error code.
             exit_status = se.code if isinstance(se.code, int) else 1
-
         except KeyboardInterrupt:
             # Cleanly handle keyboard interrupts (quits execution and dumps the profile).
             print("Scalene execution interrupted.", file=sys.stderr)
@@ -1700,7 +1706,7 @@ class Scalene:
             if Scalene.__args.memory:
                 pywhere.disable_settrace()
                 pywhere.depopulate_struct()
-                
+
         # Leaving here in case of reversion
         # sys.settrace(None)
         stats = Scalene.__stats
@@ -1762,62 +1768,63 @@ class Scalene:
             ):
                 return exit_status
 
-            if Scalene.__args.web or Scalene.__args.html:
-                profile_filename = Scalene.__profile_filename
-                if Scalene.__args.outfile:
-                    profile_filename = os.path.join(
-                        os.path.dirname(Scalene.__args.outfile),
-                        os.path.splitext(os.path.basename(Scalene.__args.outfile))[0] + ".json"
-                    )
-                generate_html(
-                    profile_fname=profile_filename,
-                    output_fname=(
-                        Scalene.__profiler_html if not Scalene.__args.outfile
-                        else Scalene.__args.outfile
-                    ),
+        assert did_output
+        if Scalene.__args.web or Scalene.__args.html:
+            profile_filename = Scalene.__profile_filename
+            if Scalene.__args.outfile:
+                profile_filename = os.path.join(
+                    os.path.dirname(Scalene.__args.outfile),
+                    os.path.splitext(os.path.basename(Scalene.__args.outfile))[0] + ".json"
                 )
-            if Scalene.in_jupyter():
-                from scalene.scalene_jupyter import ScaleneJupyter
+            generate_html(
+                profile_fname=profile_filename,
+                output_fname=(
+                    Scalene.__profiler_html if not Scalene.__args.outfile
+                    else Scalene.__args.outfile
+                ),
+            )
+        if Scalene.in_jupyter():
+            from scalene.scalene_jupyter import ScaleneJupyter
 
-                port = ScaleneJupyter.find_available_port(8181, 9000)
-                if not port:
-                    print(
-                        "Scalene error: could not find an available port.",
-                        file=sys.stderr,
-                    )
-                else:
-                    ScaleneJupyter.display_profile(
-                        port, Scalene.__profiler_html
-                    )
+            port = ScaleneJupyter.find_available_port(8181, 9000)
+            if not port:
+                print(
+                    "Scalene error: could not find an available port.",
+                    file=sys.stderr,
+                )
             else:
-                if not Scalene.__args.no_browser:
-                    # Remove any interposition libraries from the environment before opening the browser.
-                    # See also scalene/scalene_preload.py
-                    old_dyld = os.environ.pop("DYLD_INSERT_LIBRARIES", "")
-                    old_ld = os.environ.pop("LD_PRELOAD", "")
-                    output_fname = (
-                        f"{os.getcwd()}{os.sep}{Scalene.__profiler_html}"
+                ScaleneJupyter.display_profile(
+                    port, Scalene.__profiler_html
+                )
+        else:
+            if not Scalene.__args.no_browser:
+                # Remove any interposition libraries from the environment before opening the browser.
+                # See also scalene/scalene_preload.py
+                old_dyld = os.environ.pop("DYLD_INSERT_LIBRARIES", "")
+                old_ld = os.environ.pop("LD_PRELOAD", "")
+                output_fname = (
+                    f"{os.getcwd()}{os.sep}{Scalene.__profiler_html}"
+                )
+                if Scalene.__pid == 0:
+                    # Only open a browser tab for the parent.
+                    dir = os.path.dirname(__file__)
+                    subprocess.Popen(
+                        [
+                            Scalene.__orig_python,
+                            f"{dir}{os.sep}launchbrowser.py",
+                            output_fname,
+                            str(scalene.scalene_config.SCALENE_PORT),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
                     )
-                    if Scalene.__pid == 0:
-                        # Only open a browser tab for the parent.
-                        dir = os.path.dirname(__file__)
-                        subprocess.Popen(
-                            [
-                                Scalene.__orig_python,
-                                f"{dir}{os.sep}launchbrowser.py",
-                                output_fname,
-                                str(scalene.scalene_config.SCALENE_PORT),
-                            ],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                    # Restore them.
-                    os.environ.update(
-                        {
-                            "DYLD_INSERT_LIBRARIES": old_dyld,
-                            "LD_PRELOAD": old_ld,
-                        }
-                    )
+                # Restore them.
+                os.environ.update(
+                    {
+                        "DYLD_INSERT_LIBRARIES": old_dyld,
+                        "LD_PRELOAD": old_ld,
+                    }
+                )
 
         return exit_status
 
